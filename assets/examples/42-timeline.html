@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>s42 极简图解 / 时间轴</title>
+<style>html,body{margin:0;background:#F6F4EF;overflow:hidden}canvas{display:block}</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="../lib/core.js"></script>
+<script src="../lib/type.js"></script>
+<script src="../lib/post.js"></script>
+<script src="../lib/anim.js"></script>
+<script src="../lib/draw.js"></script>
+<script>
+/* ============================================================
+   42 极简图解 / 时间轴 · Minimal Timeline
+   技术栈：Canvas 2D（一条轴、几个点、两档字号）
+   要点：横屏走横轴，竖屏必须换成立轴——把横轴缩小塞进竖屏，
+       字会小到看不清；"重排不缩放"在这条上体现得最直接。
+   ============================================================ */
+const { clamp, lerp, E, prog, TAU } = DV;
+const T = DV.type, P = DV.post, A = DV.anim, D = DV.draw;
+
+const PAPER = '#F6F4EF', INK = '#161513', GREY = '#8A867E', RED = '#D63A2A';
+
+const DATA = [
+  { y: '1960', t: '早期计算机动画', s: '示波器与绘图仪' },
+  { y: '1982', t: '《Tron》', s: 'CGI 第一次进长片' },
+  { y: '1995', t: '《玩具总动员》', s: '全三维长片' },
+  { y: '2009', t: '《阿凡达》', s: '表演捕捉工业化' },
+  { y: '2022', t: '生成式视频', s: '扩散模型入场' },
+  { y: '2026', t: '纯代码出片', s: '确定性渲染' },
+];
+
+const LAYOUT = {
+  '16:9': {
+    W: 1920, H: 1080,
+    head: { x: 120, y: 148, size: 58 },
+    kicker: { x: 122, y: 210, size: 18 },
+    axis: { x0: 150, x1: 1770, y: 640 },
+    labelAbove: 560, labelBelow: 726, yearAbove: 486, yearBelow: 800,
+    vertical: false,
+    foot: { x: 122, y: 992, size: 14 },
+    row: { w: 250 },
+  },
+  '9:16': {
+    W: 1080, H: 1920,
+    head: { x: 76, y: 220, size: 50 },
+    kicker: { x: 78, y: 276, size: 16 },
+    axis: { x0: 300, y0: 420, y1: 1660 },
+    labelAbove: 0, labelBelow: 0, yearAbove: 0, yearBelow: 0,
+    vertical: true,
+    foot: { x: 78, y: 1816, size: 13 },
+    row: { w: 660 },
+  },
+};
+
+DV.scene({
+  bg: PAPER,
+  fps: 24,
+  duration: 6,
+  drift: 0.008,
+  aspects: LAYOUT,
+  draw(s, t) {
+    const { ctx: g, W, H, L } = s;
+    g.fillStyle = PAPER; g.fillRect(0, 0, W, H);
+
+    /* ---- 顶栏 ---- */
+    const hp = E.outCubic(prog(t, 0.05, 0.75));
+    T.riseIn(g, '一条线的六十年', L.head.x, L.head.y, L.head.size, hp, INK, { family: T.F.cn, weight: '600', tracking: 2, mask: false });
+    g.save();
+    g.globalAlpha = 0.75 * hp;
+    T.drawTracked(g, 'SIX NODES / 1960—2026', L.kicker.x, L.kicker.y, L.kicker.size, 3, RED, 1, T.F.mono, '500');
+    g.restore();
+
+    /* ---- 轴线 ---- */
+    const ap = E.outQuart(prog(t, 0.25, 1.35));
+    g.save();
+    g.strokeStyle = INK; g.lineWidth = 2; g.globalAlpha = 0.9;
+    if (L.vertical) {
+      const A2 = L.axis;
+      g.beginPath(); g.moveTo(A2.x0 + 0.5, A2.y0); g.lineTo(A2.x0 + 0.5, lerp(A2.y0, A2.y1, ap)); g.stroke();
+    } else {
+      const A2 = L.axis;
+      g.beginPath(); g.moveTo(A2.x0, A2.y + 0.5); g.lineTo(lerp(A2.x0, A2.x1, ap), A2.y + 0.5); g.stroke();
+    }
+    g.restore();
+
+    /* ---- 节点 ---- */
+    const n = DATA.length;
+    DATA.forEach((d, i) => {
+      const p = E.outBack(prog(t, 1.15 + i * 0.13, 1.15 + i * 0.13 + 0.45));
+      if (p <= 0) return;
+      const last = i === n - 1;
+      const col = last ? RED : INK;
+      let nx, ny;
+      if (L.vertical) {
+        const A2 = L.axis;
+        nx = A2.x0; ny = lerp(A2.y0, A2.y1, (i + 0.5) / n);
+        // 竖屏：点右移一点，文字全在右侧
+        g.save();
+        g.fillStyle = col;
+        g.beginPath(); g.arc(nx, ny, (last ? 11 : 7) * p, 0, TAU); g.fill();
+        g.strokeStyle = col; g.lineWidth = 1; g.globalAlpha = 0.35 * p;
+        g.beginPath(); g.moveTo(nx + 12, ny + 0.5); g.lineTo(nx + 44 * p, ny + 0.5); g.stroke();
+        g.restore();
+        const tx = L.axis.x0 + 66;
+        const tp = E.outCubic(prog(t, 1.35 + i * 0.13, 1.9 + i * 0.13));
+        if (tp > 0) {
+          g.save();
+          g.globalAlpha = tp;
+          g.fillStyle = last ? RED : INK;
+          g.font = T.font(40, T.F.mono, '500');
+          g.fillText(d.y, tx, ny - 26);
+          g.fillStyle = INK;
+          g.font = T.font(30, T.F.cn, '600');
+          g.globalAlpha = 0.92 * tp;
+          g.fillText(d.t, tx, ny + 16);
+          g.fillStyle = GREY;
+          g.font = T.font(20, T.F.cn, '400');
+          g.globalAlpha = 0.8 * tp;
+          g.fillText(d.s, tx, ny + 50);
+          g.restore();
+        }
+      } else {
+        const A2 = L.axis;
+        nx = lerp(A2.x0 + 60, A2.x1 - 40, i / (n - 1));
+        ny = A2.y;
+        g.save();
+        g.fillStyle = col;
+        g.beginPath(); g.arc(nx, ny, (last ? 10 : 6.5) * p, 0, TAU); g.fill();
+        g.restore();
+        // 支杆
+        const up = i % 2 === 0;
+        const ly = up ? L.labelAbove : L.labelBelow;
+        const yy = up ? L.yearAbove : L.yearBelow;
+        const tp = E.outCubic(prog(t, 1.4 + i * 0.13, 2.0 + i * 0.13));
+        if (tp > 0) {
+          g.save();
+          g.strokeStyle = INK; g.lineWidth = 1; g.globalAlpha = 0.32 * tp;
+          g.beginPath();
+          g.moveTo(nx + 0.5, ny + (up ? -8 : 8));
+          g.lineTo(nx + 0.5, ny + (up ? -46 : 46) * tp);
+          g.stroke();
+          g.restore();
+          g.save();
+          g.globalAlpha = tp;
+          g.textAlign = 'center';
+          g.fillStyle = last ? RED : INK;
+          g.font = T.font(38, T.F.mono, '500');
+          g.fillText(d.y, nx, yy + (1 - tp) * 12);
+          g.fillStyle = INK;
+          g.font = T.font(24, T.F.cn, '600');
+          g.globalAlpha = 0.92 * tp;
+          g.fillText(d.t, nx, (up ? ly - 26 : ly) + (1 - tp) * 12);
+          g.fillStyle = GREY;
+          g.font = T.font(16, T.F.cn, '400');
+          g.globalAlpha = 0.85 * tp;
+          g.fillText(d.s, nx, (up ? ly + 6 : ly + 26) + (1 - tp) * 12);
+          g.textAlign = 'left';
+          g.restore();
+        }
+      }
+    });
+
+    /* ---- 页脚 ---- */
+    g.save();
+    g.globalAlpha = 0.45 * E.outCubic(prog(t, 2.6, 3.2));
+    g.fillStyle = INK;
+    g.font = T.font(L.foot.size, T.F.mono, '400');
+    g.fillText('TIMELINE / 6 NODES / ONE ACCENT COLOUR = THE PRESENT', L.foot.x, L.foot.y);
+    g.restore();
+
+    P.grain(g, W, H, { t, alpha: 0.03, blend: 'multiply' });
+    P.vignette(g, W, H, { inner: 0.66, outer: 1.3, alpha: 0.12 });
+  },
+});
+</script>
+</body>
+</html>

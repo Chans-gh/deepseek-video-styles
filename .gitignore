@@ -1,0 +1,13 @@
+# 依赖
+node_modules/
+
+# 渲染产物
+out/
+stills/
+frames/
+
+# 渲染器在场景同目录生成的内联副本（自动生成，不要提交）
+*.build.html
+
+# 系统
+.DS_Store

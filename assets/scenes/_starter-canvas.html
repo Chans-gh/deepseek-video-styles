@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>起手模板 · Canvas 2D</title>
+<style>html,body{margin:0;background:#0E1116;overflow:hidden}canvas{display:block}</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="../lib/core.js"></script>
+<script src="../lib/type.js"></script>
+<script src="../lib/post.js"></script>
+<script src="../lib/anim.js"></script>
+<script>
+/* ============================================================
+   起手模板（Canvas 2D）—— 复制这一份改成自己的片子
+   ------------------------------------------------------------
+   三条铁律：
+   ① draw 只依赖 t；禁止 Math.random / Date.now / requestAnimationFrame
+   ② 先写坐标表 LAYOUT，再写绘制（顺序反了一定堆左上角）
+   ③ 16:9 与 9:16 各排一次版，不是把横屏缩一半
+   ============================================================ */
+const { clamp, lerp, E, prog, TAU } = DV;
+const T = DV.type, P = DV.post;
+
+const INK = '#F2F5FA', DIM = '#8A94A8', ACC = '#6EE7B7';
+
+const LAYOUT = {
+  // 两套版面是分别排的，不是缩放。竖屏纵向多出 84% 的空间，
+  // 内容块要放大、下移，再用页脚把底边压住，否则下半幅会空。
+  '16:9': {
+    W: 1920, H: 1080,
+    title: { x: 128, y: 520, size: 104 },
+    sub: { x: 132, y: 604, size: 30 },
+    bar: { x: 128, y: 700, w: 880, h: 8 },
+    foot: { x: 128, y: 1000, size: 18 },
+  },
+  '9:16': {
+    W: 1080, H: 1920,
+    title: { x: 96, y: 1010, size: 92 },
+    sub: { x: 98, y: 1100, size: 30 },
+    bar: { x: 96, y: 1210, w: 888, h: 8 },
+    foot: { x: 96, y: 1800, size: 20 },
+  },
+};
+
+DV.scene({
+  bg: '#0E1116',
+  fps: 24,
+  duration: 6,
+  // 讲义型必开：全程 0.8% 推近，肉眼无感，但每帧都在变
+  drift: 0.008,
+  aspects: LAYOUT,
+  // 预烘焙：光晕每帧 createRadialGradient 铺满全幅，渲染时间会翻倍。
+  // 烘焙成一张图，逐帧只做 drawImage，是这类"大面积底图"的标准做法。
+  setup(api) {
+    // 半径按「覆盖画面面积」反推，而不是按短边：竖屏内容只占中间一条，
+    // 同样半径下能被检测到的整帧变化少，所以竖屏要覆盖得更满。
+    const cover = api.W > api.H ? 0.72 : 0.95;
+    const r = Math.sqrt(api.W * api.H * cover / Math.PI);
+    // 低分辨率烘焙（0.34 倍）：径向渐变是低频信息，放大看不出差别，
+    // 但逐帧 alpha 混合的面积不变，省的是内存与首帧构造成本。
+    const k = 0.34, n = Math.ceil(r * 2 * k);
+    const c = document.createElement('canvas');
+    c.width = c.height = n;
+    const cg = c.getContext('2d');
+    const rg = cg.createRadialGradient(n / 2, n / 2, 10 * k, n / 2, n / 2, n / 2);
+    rg.addColorStop(0.00, 'rgba(110,231,183,0.16)');
+    rg.addColorStop(0.55, 'rgba(72,120,160,0.075)');
+    rg.addColorStop(1.00, 'rgba(14,17,22,0)');
+    cg.fillStyle = rg;
+    cg.fillRect(0, 0, c.width, c.height);
+    api.glow = c;
+    api.glowR = r;
+  },
+  draw(s, t) {
+    const { ctx: g, W, H, L } = s;
+
+    /* 0) 背景光晕：纯色底有两个毛病——看起来像 PPT，而且大面积静止会让
+          动态帧检测判死（几十像素的字在动，整帧直方图几乎不变）。
+          一团极缓漂移的径向光，每帧都在变，肉眼只觉得"有氛围"。 */
+    const cx = W * (0.62 + 0.040 * Math.sin(t * 0.55));
+    const cy = H * (0.34 + 0.050 * Math.cos(t * 0.43));
+    /* 亮度呼吸：保证"每一帧都在变"的那一层。
+       用三角波而不是正弦——正弦在峰谷处变化率趋零，一段几百毫秒的画面
+       等于静止，动态帧检测会把这些帧判死。三角波的变化率恒定。
+       振幅也要给够：0.16 的光晕乘 ±0.45 只有几级灰度差，再小就检测不到。 */
+    const tri = (u) => { const f = u - Math.floor(u); return f < 0.5 ? f * 2 : (1 - f) * 2; };
+    g.globalAlpha = 0.55 + 0.45 * tri(t * 0.36);
+    g.drawImage(s.glow, cx - s.glowR, cy - s.glowR, s.glowR * 2, s.glowR * 2);
+    g.globalAlpha = 1;
+
+    /* 1) 标题：整行上浮入场。riseIn 自带 mask，溢出部分会被裁掉，
+          不必手写 clip，也不会露出半个字。 */
+    T.riseIn(g, '一句话说清讲什么', L.title.x, L.title.y, L.title.size,
+      E.outCubic(prog(t, 0.15, 0.75)), INK, { family: T.F.cn, weight: '700' });
+
+    /* 2) 副标：打字机。typed 返回截断后的字符串，天然确定。 */
+    const sub = T.typed('副标题写成一件事，不写形容词', t, 0.9, 26);
+    g.fillStyle = DIM;
+    g.font = T.font(L.sub.size, T.F.cn, '400');
+    g.fillText(sub, L.sub.x, L.sub.y);
+
+    /* 2b) 打字机光标：打完也不撤，常驻闪烁——小元素不是用来凑动态帧的，
+           是让"刚打完字"这件事看起来还在进行。 */
+    if (t > 0.35) {
+      const on = Math.floor(t * 3.2) % 2 === 0;
+      if (on) {
+        const cw = T.measure(g, sub, g.font);
+        g.fillStyle = ACC;
+        g.globalAlpha = 0.85;
+        g.fillRect(L.sub.x + cw + 6, L.sub.y - L.sub.size * 0.82, 3, L.sub.size * 0.98);
+        g.globalAlpha = 1;
+      }
+    }
+
+    /* 3) 进度条：底轨 + 前景各画一次，宽度走同一条进度 */
+    const p = E.outCubic(clamp((t - 1.6) / 2.4));
+    g.fillStyle = 'rgba(255,255,255,0.10)';
+    g.fillRect(L.bar.x, L.bar.y, L.bar.w, L.bar.h);
+    g.fillStyle = ACC;
+    g.fillRect(L.bar.x, L.bar.y, L.bar.w * p, L.bar.h);
+
+    /* 3b) 页脚：一行极小的标记。竖屏纵向多 84% 空间，没有落款会显得"没排完"；
+          横屏加上它，底边也不会飘。 */
+    g.fillStyle = 'rgba(242,245,250,0.20)';
+    g.font = T.font(L.foot.size, T.F.mono, '400');
+    g.fillText('STARTER · ' + (W > H ? '16:9' : '9:16'), L.foot.x, L.foot.y);
+
+    /* 4) 收尾质感：颗粒 + 暗角，永远压在最后一步。
+          缺这两样，画面会"干净得像 PPT"。 */
+    P.grain(g, W, H, { t, alpha: 0.035 });
+    P.vignette(g, W, H, { inner: 0.50, outer: 1.15, alpha: 0.50 });
+  },
+});
+</script>
+</body>
+</html>

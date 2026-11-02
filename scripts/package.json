@@ -1,0 +1,14 @@
+{
+  "name": "deepseek-video-styles-renderer",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "确定性逐帧渲染器：seek(t) → 逐帧 PNG → mp4",
+  "scripts": {
+    "render": "node render.mjs"
+  },
+  "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "puppeteer-core": "^25.16.0"
+  }
+}

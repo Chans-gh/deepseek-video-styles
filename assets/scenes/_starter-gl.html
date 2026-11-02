@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>起手模板 · WebGL2 底层 + Canvas 字层</title>
+<style>
+html,body{margin:0;background:#05070C;overflow:hidden}
+canvas{display:block;position:absolute;left:0;top:0}
+#gl{z-index:1}
+#c{z-index:2}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="c"></canvas>
+<script src="../lib/core.js"></script>
+<script src="../lib/type.js"></script>
+<script src="../lib/gl.js"></script>
+<script>
+/* ============================================================
+   起手模板（WebGL2 + Canvas 叠层）
+   ------------------------------------------------------------
+   core.scene 拿到的是 2d 上下文，拿不到 webgl2，所以叠两张画布：
+   底层 #gl 画整屏着色器，顶层 #c 只画字。截图时浏览器自动合成。
+   两个必须记住的坑（gl.js 已经处理好，别去改）：
+   1) preserveDrawingBuffer 必须 true，否则截到空白
+   2) antialias 必须 false，swiftshader 下 MSAA 让 1080p 的 fbm 慢 3 倍
+   ============================================================ */
+const { clamp, E, prog } = DV;
+const T = DV.type;
+
+const LAYOUT = {
+  '16:9': { W: 1920, H: 1080, cap: { x: 128, y: 980, size: 26 } },
+  '9:16': { W: 1080, H: 1920, cap: { x: 76, y: 1720, size: 22 } },
+};
+
+// fragBody 里能直接用 u_res / u_t，以及 gl.js 预置的 hash21 / vnoise / fbm / pal
+const FRAG = `
+float tri(float u) { float f = fract(u); return f < 0.5 ? f * 2.0 : (1.0 - f) * 2.0; }
+
+void main() {
+  // 归一化到"短边为 1"的坐标，横竖屏构图才不会变形
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_res) / u_res.y;
+
+  // 噪声是低频的，漂得太慢时一半的帧在检测上等于静止（实测只有 57%）。
+  // 两个改法：让它走快一点，再叠一层恒速的亮度呼吸。
+  float n = fbm(p * 2.6 + vec2(u_t * 0.07, u_t * 0.30));
+  float breath = 0.82 + 0.18 * tri(u_t * 0.40);
+
+  float glow = smoothstep(0.72, 0.10, length(p - vec2(0.0, 0.05)));
+  vec3 col = mix(vec3(0.03, 0.04, 0.07), vec3(0.55, 0.36, 0.92), n * 0.9);
+  col += vec3(0.25, 0.85, 0.72) * glow * 0.55;
+  col *= breath;
+  col *= 0.55 + 0.45 * smoothstep(1.15, 0.05, length(p));
+  outColor = vec4(col, 1.0);
+}`;
+
+let GL = null;
+
+DV.scene({
+  bg: null,          // 2d 层保持透明，否则会盖住底下的着色器
+  fps: 24,
+  duration: 6,
+  drift: 0.008,
+  aspects: LAYOUT,
+  setup() {
+    GL = DV.gl.fullscreen(document.getElementById('gl'), FRAG);
+    if (!GL) throw new Error('这个环境没有 WebGL2');
+  },
+  draw({ ctx: g, W, H, L }, t) {
+    // 先画底层：每帧都要调，否则画面停在上一帧
+    GL.frame(W, H, t);
+
+    // 顶层只放字与线，不放任何需要抹掉底色的色块
+    g.fillStyle = 'rgba(242,246,250,0.92)';
+    g.font = T.font(L.cap.size, T.F.mono, '500');
+    g.fillText('WEBGL2 / FULLSCREEN SHADER', L.cap.x, L.cap.y);
+
+    // 一条细线：证明 2d 层是叠在着色器上面的
+    const p = E.outCubic(prog(t, 0.4, 1.8));
+    g.strokeStyle = 'rgba(242,246,250,0.55)';
+    g.lineWidth = 2;
+    g.beginPath();
+    g.moveTo(L.cap.x, L.cap.y + L.cap.size * 1.1);
+    g.lineTo(L.cap.x + 420 * p, L.cap.y + L.cap.size * 1.1);
+    g.stroke();
+  },
+});
+</script>
+</body>
+</html>

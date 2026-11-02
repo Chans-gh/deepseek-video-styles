@@ -1,0 +1,27 @@
+# 文档与配方许可：CC BY 4.0
+
+本仓库的**代码**（`scripts/`、`assets/lib/`、`assets/scenes/`、`assets/examples/`）采用根目录
+[`LICENSE`](LICENSE) 中的 **MIT** 协议。
+
+**文档与配方**——`references/` 下全部内容（含 34 份风格配方）、`SKILL.md`、`README.md`、
+`assets/preview/` 下的总览图——采用
+[Creative Commons Attribution 4.0 International（CC BY 4.0）](https://creativecommons.org/licenses/by/4.0/)。
+
+简单说，你可以：
+
+- **共享**：以任何媒介或格式复制、转载本仓库的文档与配方
+- **改编**：修改、重混、基于它做商业或非商业用途
+
+只要做到一条：
+
+- **署名**：注明来源为 `Chans-gh/deepseek-video-styles`，并附上协议链接；若做过修改，需说明改了哪里。
+
+协议全文以官方文本为准：
+<https://creativecommons.org/licenses/by/4.0/legalcode>
+
+---
+
+## 一处需要说明的边界
+
+配方里记录的**风格本身**（如"瑞士国际主义排版""装饰艺术""16-bit 像素风"）属于通用的设计语言与历史风格，
+不受本协议约束——协议覆盖的是这些配方文档的**文字、参数与结构化表达**。你可以照着配方做出自己的作品并任意使用、商用。

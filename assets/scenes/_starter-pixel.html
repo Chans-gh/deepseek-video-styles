@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>起手模板 · 16-bit 像素</title>
+<style>html,body{margin:0;background:#0B0E14;overflow:hidden}canvas{display:block}</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="../lib/core.js"></script>
+<script src="../lib/pixel.js"></script>
+<script>
+/* ============================================================
+   起手模板（16-bit 像素）—— 低分辨率离屏 + 整数倍放大
+   ------------------------------------------------------------
+   像素风的三个硬规矩：
+   ① 离屏尺寸必须是成品尺寸的整数分之一（320×180 → ×6 = 1920×1080）
+   ② 离屏与 blit 两处都要 imageSmoothingEnabled = false，漏一处就糊
+   ③ 别开 drift：非整数缩放会把硬边糊掉（横屏推镜会毁掉像素感）
+   ============================================================ */
+const { clamp, E, prog, TAU } = DV;
+const PI = DV.pixel;
+
+// 十六进制插值：像素风不能靠"整体透明度呼吸"（那是半透明混合，
+// 会引入中间色，破坏色阶），要直接换调色板里的颜色。
+const mixHex = (a, b, p) => {
+  const A = parseInt(a.slice(1), 16), B = parseInt(b.slice(1), 16);
+  const ch = (v, sh) => Math.round(((v >> sh) & 255) * (1 - p) + ((B >> sh) & 255) * p);
+  return `rgb(${ch(A, 16)},${ch(A, 8)},${Math.round((A & 255) * (1 - p) + (B & 255) * p)})`;
+};
+
+// 字符精灵：'.' 透明，其余字符查 palette
+const HERO = [
+  '..111..',
+  '.11111.',
+  '.12221.',
+  '.11111.',
+  '..222..',
+  '.22222.',
+  '..2.2..',
+];
+
+DV.scene({
+  bg: '#0B0E14',
+  fps: 24,
+  duration: 6,
+  aspects: {
+    '16:9': { W: 1920, H: 1080, sw: 320, sh: 180, ground: 132 },
+    '9:16': { W: 1080, H: 1920, sw: 180, sh: 320, ground: 250 },
+  },
+  setup(s) {
+    // 离屏只建一次：逐帧 new 画布会把渲染时间翻倍
+    s.st = PI.stage(s.L.sw, s.L.sh);
+  },
+  draw({ ctx: g, W, H, L, st }, t) {
+    const sg = st.g;
+    // 离屏每帧必须清：不清会叠上一层残影
+    sg.clearRect(0, 0, L.sw, L.sh);
+
+    /* 天色：像素风的"动"必须是像素真的换色。
+       小人在走只占全屏 0.3%，动态帧检测看不到；天空占 73%，
+       让三档色阶一起缓慢压暗，整片天每帧都在变，肉眼只觉得"天在暗下去"。
+       注意不能开 drift 做这件事——非整数缩放会把硬边糊掉。 */
+    const dusk = 0.22 + 0.38 * Math.sin(t * 0.95);
+    const bands = ['#1B2A4A', '#22355C', '#2A4070'];
+    const bh = L.ground / bands.length;
+    bands.forEach((c, i) => {
+      sg.fillStyle = mixHex(c, '#070A14', dusk);
+      sg.fillRect(0, i * bh, L.sw, bh + 1);
+    });
+
+    // 地面（跟着天色一起压暗，否则天地会脱节）
+    sg.fillStyle = mixHex('#2E7D4F', '#10281C', dusk * 0.8);
+    sg.fillRect(0, L.ground, L.sw, L.sh - L.ground);
+    sg.fillStyle = mixHex('#245F3D', '#0C1C14', dusk * 0.8);
+    for (let x = 0; x < L.sw; x += 16) sg.fillRect(x, L.ground, 8, 4);
+
+    // 主角：1 像素呼吸（站立时也要有位移，否则像素风"一帧都不变"）
+    const walk = Math.round((t * 22) % 44);
+    const hx = 18 + walk;
+    const breathe = Math.floor(t / 0.34) % 2;
+    // px=2：7×7 的字模在 320×180 里画 1 像素太小，成品上看不见
+    PI.sprite(sg, HERO, { 1: '#FFD166', 2: '#E4572E' }, hx, L.ground - 14 - breathe * 2, 2);
+
+    // 整数倍放大回成品尺寸
+    PI.blit(g, st.cv, W, H);
+  },
+});
+</script>
+</body>
+</html>

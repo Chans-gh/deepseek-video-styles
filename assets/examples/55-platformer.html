@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>s55 16-bit 像素平台</title>
+<style>html,body{margin:0;background:#101018;overflow:hidden}canvas{display:block}</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="../lib/core.js"></script>
+<script src="../lib/type.js"></script>
+<script src="../lib/post.js"></script>
+<script src="../lib/anim.js"></script>
+<script src="../lib/pixel.js"></script>
+<script>
+/* ============================================================
+   55 16-bit 像素平台 · Platformer
+   技术栈：Canvas 2D + 离屏低分辨率画布（480×270，整数倍放大）
+   要点：像素风必须真的用低分辨率画再整数放大；在大画布上画小方块
+       会得到"假像素"（半透明边、格距不匀）。视差至少三层，
+       角色永远钉在屏幕同一个 x 上，动的是世界。
+   ============================================================ */
+const { clamp, lerp, E, prog } = DV;
+const PX = DV.pixel, P = DV.post;
+
+const LAYOUT = {
+  '16:9': { W: 1920, H: 1080, pw: 480, ph: 270, ground: 196, heroX: 160, speed: 60, hudPx: 1 },
+  '9:16': { W: 1080, H: 1920, pw: 270, ph: 480, ground: 372, heroX: 86, speed: 54, hudPx: 1 },
+};
+
+const SKY0 = '#5FB6E0', SKY1 = '#BFE6F2', FAR = '#7C9CBC', FAR2 = '#5E7F9F';
+const HILL = '#3C8A57', HILL2 = '#2F7248';
+const DIRT = '#8A5A32', DIRT2 = '#6E4526', GRASS = '#57B04E', GRASS2 = '#3E8C3C';
+const GOLD = '#F5C542', GOLD2 = '#C8912A';
+
+const GAP0 = 286, GAP1 = 338;   // 世界坐标里的坑
+
+/* ---------- 像素角色：10×17，矩形拼装，帧间只改腿臂 ---------- */
+function hero(g, x, y, frame, air) {
+  x = Math.round(x); y = Math.round(y);
+  const SKIN = '#F0C09A', SKIN2 = '#C98B62', SUIT = '#2F5FD0', SUIT2 = '#1E3F92',
+    CAP = '#D93B2B', INK = '#141420', BOOT = '#20202C';
+  const r = (dx, dy, w, h, c) => { g.fillStyle = c; g.fillRect(x + dx, y + dy, w, h); };
+  r(2, 0, 6, 2, CAP); r(1, 2, 8, 1, CAP); r(2, 3, 6, 1, INK);
+  r(3, 4, 4, 4, SKIN); r(3, 4, 1, 1, SKIN2);
+  r(6, 5, 1, 2, INK);
+  r(2, 8, 6, 5, SUIT); r(2, 8, 6, 1, SUIT2); r(4, 9, 2, 3, '#F2F2F2');
+  if (air) { r(0, 7, 2, 3, SKIN); r(8, 6, 2, 3, SKIN); }
+  else if (frame) { r(0, 9, 2, 3, SKIN); r(8, 8, 2, 3, SKIN); }
+  else { r(1, 8, 2, 3, SKIN); r(7, 9, 2, 3, SKIN); }
+  if (air) { r(2, 13, 3, 3, SUIT2); r(6, 13, 2, 2, SUIT2); r(6, 15, 3, 1, BOOT); }
+  else if (frame) { r(2, 13, 2, 3, SUIT2); r(6, 13, 2, 3, SUIT2); r(1, 16, 3, 1, BOOT); r(6, 16, 3, 1, BOOT); }
+  else { r(3, 13, 2, 3, SUIT2); r(6, 13, 2, 3, SUIT2); r(2, 16, 3, 1, BOOT); r(7, 16, 3, 1, BOOT); }
+}
+
+function coin(g, x, y, p) {
+  // 8×8 硬币：去掉四角，旋转时用宽度模拟
+  const w = Math.max(1, Math.round(8 * Math.abs(Math.cos(p))));
+  const ox = Math.round(x + (8 - w) / 2), oy = Math.round(y);
+  g.fillStyle = GOLD2;
+  g.fillRect(ox, oy + 1, w, 6);
+  if (w > 2) { g.fillRect(ox + 1, oy, w - 2, 8); }
+  g.fillStyle = GOLD;
+  g.fillRect(ox, oy + 2, w, 4);
+  if (w > 2) g.fillRect(ox + 1, oy + 1, w - 2, 6);
+  if (w > 3) { g.fillStyle = '#FFF0B0'; g.fillRect(ox + 1, oy + 2, 1, 2); }
+}
+
+DV.scene({
+  bg: '#0E0E16',
+  fps: 24,
+  duration: 6,
+  aspects: LAYOUT,
+  setup(s) {
+    s.stage = PX.stage(s.L.pw, s.L.ph);
+    const r = DV.rng(55);
+    s.clouds = [];
+    for (let i = 0; i < 9; i++) s.clouds.push({ x: r.range(0, 760), y: r.range(14, 78), w: r.int(20, 44), h: r.int(6, 9) });
+    s.far = [];
+    for (let i = 0; i < 7; i++) s.far.push({ x: i * 140 + r.range(-30, 30), h: r.range(34, 62), w: r.range(120, 190) });
+    s.near = [];
+    for (let i = 0; i < 6; i++) s.near.push({ x: i * 190 + r.range(-40, 40), h: r.range(16, 30), w: r.range(150, 240) });
+  },
+  draw(s, t) {
+    const { ctx: g, W, H, L } = s;
+    const st = s.stage, p = st.g;
+    const PW = L.pw, PH = L.ph;
+
+    // 角色钉在屏幕上，动的是世界
+    const heroWorld = 40 + t * L.speed;
+    const camX = heroWorld - L.heroX;
+
+    /* ---- 清屏：离屏画布是复用的，不擦会把上一帧的地面留在坑里 ---- */
+    p.clearRect(0, 0, PW, PH);
+    PX.ditherGrad(p, 0, 0, PW, L.ground, [[0, SKY0], [1, SKY1]]);
+    // 地下底色：坑里露出来的就是它
+    p.fillStyle = '#2A1B10'; p.fillRect(0, L.ground, PW, PH - L.ground);
+
+    /* ---- 云：视差 0.12 ---- */
+    s.clouds.forEach((c) => {
+      const x = ((c.x - camX * 0.12) % 760 + 760) % 760 - 60;
+      p.fillStyle = 'rgba(255,255,255,0.94)';
+      p.fillRect(Math.round(x), Math.round(c.y), c.w, c.h);
+      p.fillRect(Math.round(x + c.w * 0.22), Math.round(c.y - 4), Math.round(c.w * 0.5), 5);
+      p.fillStyle = 'rgba(186,222,238,0.95)';
+      p.fillRect(Math.round(x), Math.round(c.y + c.h - 2), c.w, 2);
+    });
+
+    /* ---- 远山：两层叠，视差 0.30 / 0.55 ---- */
+    const drawRidge = (arr, span, k, base, col) => {
+      p.fillStyle = col;
+      arr.forEach((b) => {
+        const x = ((b.x - camX * k) % span + span) % span - 220;
+        p.beginPath();
+        p.moveTo(Math.round(x), base);
+        p.lineTo(Math.round(x + b.w * 0.5), Math.round(base - b.h));
+        p.lineTo(Math.round(x + b.w), base);
+        p.fill();
+      });
+    };
+    drawRidge(s.far, 980, 0.30, L.ground, FAR);
+    drawRidge(s.near, 1140, 0.55, L.ground, FAR2);
+
+    /* ---- 近丘：视差 0.6 ---- */
+    p.fillStyle = HILL2;
+    s.near.forEach((b) => {
+      const x = ((b.x * 1.4 - camX * 0.6) % 1140 + 1140) % 1140 - 200;
+      p.beginPath();
+      p.moveTo(Math.round(x), L.ground);
+      p.quadraticCurveTo(Math.round(x + b.w * 0.5), Math.round(L.ground - b.h * 1.4), Math.round(x + b.w), L.ground);
+      p.fill();
+    });
+    p.fillStyle = HILL;
+    p.fillRect(0, L.ground - 3, PW, 3);
+
+    /* ---- 地面：草皮 5px + 砖土 ---- */
+    for (let x = -8; x < PW + 8; x += 8) {
+      const wx = x + camX;
+      if (wx > GAP0 && wx < GAP1) continue;
+      p.fillStyle = GRASS; p.fillRect(x, L.ground, 8, 3);
+      p.fillStyle = GRASS2; p.fillRect(x, L.ground + 3, 8, 2);
+      p.fillStyle = DIRT; p.fillRect(x, L.ground + 5, 8, PH - L.ground);
+    }
+    // 砖缝：横线每 12，竖缝每 16 交错
+    for (let by = L.ground + 5; by < PH; by += 12) {
+      p.fillStyle = DIRT2;
+      // 横缝必须跳过坑口，否则坑里会横着几道砖线，看着像没挖开
+      const gl = Math.max(0, Math.min(PW, GAP0 - camX));
+      const gr = Math.max(0, Math.min(PW, GAP1 - camX));
+      if (gr > gl) { p.fillRect(0, by, gl, 1); p.fillRect(gr, by, PW - gr, 1); }
+      else p.fillRect(0, by, PW, 1);
+      const off = (Math.floor((by - L.ground) / 12) % 2) ? 8 : 0;
+      for (let x = off; x < PW; x += 16) {
+        const wx = x + camX;
+        if (wx > GAP0 && wx < GAP1) continue;
+        p.fillRect(x, by, 1, 12);
+      }
+    }
+    // 坑口断面
+    [GAP0, GAP1].forEach((wx) => {
+      const x = Math.round(wx - camX);
+      if (x > -8 && x < PW + 8) { p.fillStyle = '#3A2414'; p.fillRect(x - 1, L.ground, 1, PH - L.ground); }
+    });
+
+    /* ---- 金币 ---- */
+    let got = 0;
+    for (let i = 0; i < 7; i++) {
+      const cx = 100 + i * 52;
+      const cy = L.ground - 30 - Math.sin(i * 1.4) * 7 - (i % 3 === 0 ? 12 : 0);
+      const taken = heroWorld > cx - 4 && heroWorld < cx + 14;
+      if (taken) { got++; continue; }
+      coin(p, cx - camX, cy + Math.sin(t * 3 + i) * 1.5, t * 2.6 + i * 0.7);
+    }
+
+    /* ---- 角色：跑 → 跳过坑 → 落地 ---- */
+    const jp = prog(t, 3.75, 4.95);
+    const air = jp > 0 && jp < 1;
+    const jy = air ? -Math.sin(jp * Math.PI) * 44 : 0;
+    const frame = Math.floor(t * 9) % 2;
+    hero(p, L.heroX, L.ground - 17 + jy, frame, air);
+
+    /* ---- HUD ---- */
+    const hx = L.hudPx;
+    PX.text(p, 'SCORE ' + String(120 + got * 10).padStart(5, '0'), 5, 5, hx, '#FFFFFF');
+    const wr = 'WORLD 1-1';
+    PX.text(p, wr, PW - PX.textW(wr, hx) - 5, 5, hx, '#FFFFFF');
+    PX.text(p, '×3', 5, 5 + hx * 9, hx, GOLD);
+
+    /* ---- 放大 + 后期 ---- */
+    g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+    PX.blit(g, st.cv, W, H);
+    P.scanlines(g, W, H, { gap: Math.max(3, Math.round(H / 270)), thick: 1, alpha: 0.10 });
+    const vg = g.createRadialGradient(W / 2, H / 2, H * 0.36, W / 2, H / 2, H * 0.98);
+    vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.42)');
+    g.fillStyle = vg; g.fillRect(0, 0, W, H);
+  },
+});
+</script>
+</body>
+</html>

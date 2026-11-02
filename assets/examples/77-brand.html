@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>s77 抽象品牌片</title>
+<style>
+html,body{margin:0;background:#05070C;overflow:hidden}
+canvas{display:block;position:absolute;left:0;top:0}
+#gl{z-index:1}
+#c{z-index:2}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="c"></canvas>
+<script src="../lib/core.js"></script>
+<script src="../lib/type.js"></script>
+<script src="../lib/post.js"></script>
+<script src="../lib/anim.js"></script>
+<script src="../lib/draw.js"></script>
+<script src="../lib/gl.js"></script>
+<script>
+/* ============================================================
+   77 抽象品牌片 · Liquid Chrome
+   技术栈：WebGL2 全屏着色器（底层）+ Canvas2D（字标层）
+   要点：品牌片不靠叙事，靠"材质的可信度"——
+       液态铬的反射、掠射角的虹彩、一道横扫光，三样齐了就高级。
+       法线不用三次采样，直接用 dFdx/dFdy 从高度场取，
+       省两个 fbm（约 60% 的算力），边缘还更锐。
+   ============================================================ */
+const { clamp, lerp, E, prog, TAU } = DV;
+const T = DV.type, P = DV.post;
+
+const INK = '#F2F6FA', DIM = '#8FA0B2';
+const BRAND = 'NOVA';
+const TAGLINE = 'A QUIET KIND OF FORCE';
+
+const LAYOUT = {
+  '16:9': {
+    W: 1920, H: 1080,
+    mark: { cx: 960, cy: 470, r: 54 },
+    word: { cx: 960, y: 610, size: 104 },
+    tag: { cx: 960, y: 700, size: 17 },
+    foot: { x: 96, y: 992, size: 14 },
+    scrim: 1.0,
+  },
+  '9:16': {
+    W: 1080, H: 1920,
+    mark: { cx: 540, cy: 810, r: 62 },
+    word: { cx: 540, y: 980, size: 96 },
+    tag: { cx: 540, y: 1082, size: 17 },
+    foot: { x: 72, y: 1822, size: 14 },
+    scrim: 1.05,
+  },
+};
+
+const FRAG = `
+void main() {
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_res) / u_res.y;
+  float t = u_t;
+  float R0 = length(p);
+
+  // 极缓慢的整体旋转：像镜头绕着物件挪，而不是物件自己在转
+  float a = 0.10 * sin(t * 0.42);
+  mat2 rot = mat2(cos(a), -sin(a), sin(a), cos(a));
+  vec2 q = rot * p;
+
+  // 域扭曲：一层 fbm 推另一层，才有"液体"而不是"云"
+  float f1 = fbm(q * 1.22 + vec2(0.0, t * 0.15));
+  float h  = fbm(q * 1.22 + 1.9 * vec2(f1) + vec2(t * 0.09, -t * 0.055));
+
+  // 法线：dFdx/dFdy 直接吃高度场的屏幕空间导数，省两次采样。
+  // 0.030 是"大起伏"和"细褶皱"的分界，调大就开始像蛇皮。
+  vec2 gg = vec2(dFdx(h), dFdy(h)) * u_res.y * 0.030;
+  vec3 N = normalize(vec3(-gg, 1.0));
+
+  vec3 V = vec3(0.0, 0.0, 1.0);
+  vec3 Rf = reflect(-V, N);
+
+  // 棚拍环境：天光 + 一道灯带 + 地面反射。铬的可信度全靠这三段。
+  float sky = smoothstep(-0.62, 0.95, Rf.y);
+  vec3 env = mix(vec3(0.026, 0.026, 0.034), vec3(0.52, 0.60, 0.74), sky);
+  env += vec3(1.0, 0.985, 0.96) * exp(-pow((Rf.y - 0.20) / 0.13, 2.0)) * 0.95;
+  env += vec3(0.09, 0.13, 0.19) * exp(-pow((Rf.y + 0.58) / 0.34, 2.0));
+
+  float fres = pow(1.0 - clamp(N.z, 0.0, 1.0), 3.0);
+  vec3 Hv = normalize(normalize(vec3(-0.42, 0.52, 0.74)) + V);
+  float spec = pow(max(dot(N, Hv), 0.0), 72.0);
+
+  vec3 col = env * (0.86 + 0.30 * fres);
+  col += vec3(1.0, 0.99, 0.97) * spec * 0.85;
+  // 虹彩只留一薄层，压在掠射角上——大半幅面彩起来就变成油膜了
+  vec3 irid = pal(h * 1.9 + fres * 1.15 + t * 0.11, vec3(0.5), vec3(0.42), vec3(1.0), vec3(0.0, 0.33, 0.67));
+  col = mix(col, col * 0.64 + irid * 0.66, fres * 0.42);
+
+  // 一道横扫光带：从下往上，只扫一次
+  float sy = mix(-0.66, 0.66, smoothstep(1.4, 5.6, t));
+  col += vec3(0.75, 0.86, 1.0) * exp(-pow((p.y - sy) / 0.05, 2.0)) * 0.16;
+
+  // 暗角 + 中心压暗（给字标让出对比度）
+  // 压暗区的横向范围必须用归一化坐标：竖屏下 p.x 只有 ±0.28，
+  // 用固定阈值会让整幅宽度都落在"压暗"里，中间变成一条灰带。
+  vec2 q2 = (gl_FragCoord.xy - 0.5 * u_res) / u_res;
+  col *= smoothstep(1.34, 0.18, R0 * 0.90);
+  col *= 1.0 - 0.44 * smoothstep(0.50, 0.02, abs(p.y)) * smoothstep(0.30, 0.04, abs(q2.x));
+
+  outColor = vec4(pow(max(col, 0.0), vec3(0.94)), 1.0);
+}`;
+
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
+let GL = null;
+
+DV.scene({
+  fps: 24,
+  duration: 6,
+  aspects: LAYOUT,
+  setup(s) {
+    GL = DV.gl.fullscreen(document.getElementById('gl'), FRAG);
+    if (!GL) throw new Error('WebGL2 不可用');
+    GL.frame(s.W, s.H, 0, {});
+  },
+  draw(s, t) {
+    const { ctx: g, W, H, L } = s;
+    if (GL) GL.frame(W, H, t, {});
+
+    /* ---- 字标层 ---- */
+    // 先压一层柔和的暗场，防止亮部把字吃掉
+    const sc = g.createRadialGradient(L.word.cx, L.word.y - L.word.size * 0.3, 20, L.word.cx, L.word.y - L.word.size * 0.3, W * 0.42 * L.scrim);
+    sc.addColorStop(0, 'rgba(4,6,11,0.48)');
+    sc.addColorStop(1, 'rgba(4,6,11,0)');
+    g.fillStyle = sc; g.fillRect(0, 0, W, H);
+
+    // 厂标：一个缺口环，缺口固定在 10 点方向，慢慢自转到 12 点
+    const mp = E.outCubic(prog(t, 2.1, 2.9));
+    if (mp > 0) {
+      const M = L.mark;
+      const rot = lerp(-0.4, 0, E.outCubic(prog(t, 2.1, 3.6))) + t * 0.035;
+      g.save();
+      g.translate(M.cx, M.cy);
+      g.rotate(rot);
+      g.globalAlpha = mp;
+      g.strokeStyle = INK; g.lineWidth = Math.max(1.4, M.r * 0.055); g.lineCap = 'butt';
+      g.beginPath(); g.arc(0, 0, M.r, 0, TAU); g.stroke();
+      // 环里是四角星：四条凹弧收在中心，才是"新星"而不是"眼睛"
+      g.globalAlpha = mp * 0.95;
+      g.strokeStyle = INK; g.lineWidth = Math.max(1.4, M.r * 0.085);
+      g.lineJoin = 'miter';
+      const sr = M.r * 0.46;
+      g.beginPath();
+      for (let i = 0; i < 4; i++) {
+        const a0 = -Math.PI / 2 + (i * TAU) / 4;
+        const a1 = a0 + TAU / 4;
+        i ? g.lineTo(Math.cos(a0) * sr, Math.sin(a0) * sr) : g.moveTo(Math.cos(a0) * sr, Math.sin(a0) * sr);
+        g.quadraticCurveTo(0, 0, Math.cos(a1) * sr, Math.sin(a1) * sr);
+      }
+      g.stroke();
+      g.restore();
+    }
+
+    // 字标：从中心向两侧逐字张开，字距同时收
+    const bp = E.outCubic(prog(t, 2.6, 3.9));
+    if (bp > 0) {
+      const Wd = L.word;
+      const size = Wd.size;
+      const trk = lerp(size * 0.52, size * 0.24, E.outCubic(prog(t, 2.6, 4.6)));  // 字距
+      g.save();
+      g.font = T.font(size, T.F.sans, '300');
+      const ws = BRAND.split('').map((ch) => T.measure(g, ch, g.font));
+      const total = ws.reduce((a, b) => a + b, 0) + trk * (BRAND.length - 1);
+      let x = Wd.cx - total / 2;
+      g.textBaseline = 'alphabetic';
+      BRAND.split('').forEach((ch, i) => {
+        // 中间两字先起，向两侧推开
+        const d = Math.abs(i - (BRAND.length - 1) / 2);
+        const lp = E.outCubic(clamp((bp - d * 0.16) * 1.9));
+        if (lp > 0) {
+          g.globalAlpha = lp;
+          g.fillStyle = INK;
+          // 起手略微下沉 + 拉高，落位时不弹（品牌片忌弹跳）
+          const dy = (1 - lp) * size * 0.22;
+          g.setTransform(1, 0, 0, 1, 0, 0);
+          g.translate(x + ws[i] / 2, Wd.y + dy);
+          g.scale(1, lerp(1.14, 1, lp));
+          g.fillText(ch, -ws[i] / 2, 0);
+        }
+        x += ws[i] + trk;
+      });
+      g.restore();
+    }
+
+    // 副标：一条细线 + 拉开的字距
+    const tp = E.outCubic(prog(t, 3.5, 4.5));
+    if (tp > 0) {
+      const TG = L.tag;
+      g.save();
+      g.globalAlpha = tp * 0.85;
+      g.strokeStyle = hexA('#F2F6FA', 0.5); g.lineWidth = 1;
+      g.beginPath();
+      g.moveTo(TG.cx - 170 * tp, TG.y - TG.size * 1.9);
+      g.lineTo(TG.cx + 170 * tp, TG.y - TG.size * 1.9);
+      g.stroke();
+      g.fillStyle = DIM;
+      g.font = T.font(TG.size, T.F.sans, '400');
+      // 手动拉字距：ctx.letterSpacing 在 headless 下不稳，逐字画最保险。
+      // 居中要先量出真宽度，用 0.55em 估宽会让整行偏左半个字。
+      const tr = lerp(TG.size * 0.12, TG.size * 0.46, tp);
+      const cw = TAGLINE.split('').map((ch) => T.measure(g, ch, g.font));
+      const tw2 = cw.reduce((a, b) => a + b, 0) + tr * (TAGLINE.length - 1);
+      let tx = TG.cx - tw2 / 2;
+      TAGLINE.split('').forEach((ch, i) => {
+        g.fillText(ch, tx, TG.y);
+        tx += cw[i] + tr;
+      });
+      g.restore();
+    }
+
+    // 页脚：脚下压一道暗带，否则字压在亮峰上直接消失
+    const fp = E.outCubic(prog(t, 4.4, 5.2));
+    if (fp > 0) {
+      const btm = g.createLinearGradient(0, H - H * 0.16, 0, H);
+      btm.addColorStop(0, 'rgba(4,6,11,0)');
+      btm.addColorStop(1, 'rgba(4,6,11,0.72)');
+      g.save();
+      g.globalAlpha = fp;
+      g.fillStyle = btm; g.fillRect(0, H - H * 0.16, W, H * 0.16);
+      g.globalAlpha = fp * 0.62;
+      g.fillStyle = '#C9D4E0';
+      g.font = T.font(L.foot.size, T.F.mono, '400');
+      g.fillText('ABSTRACT BRAND FILM / 77 · WEBGL2', L.foot.x, L.foot.y);
+      g.restore();
+    }
+
+    P.vignette(g, W, H, { inner: 0.30, outer: 1.05, alpha: 0.45 });
+    P.grain(g, W, H, { t, alpha: 0.035 });
+  },
+});
+</script>
+</body>
+</html>
